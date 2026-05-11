@@ -146,7 +146,7 @@ not designed for.
 | [Daytona](https://github.com/daytonaio/daytona) | OCI workspace (Docker-compatible, per-workspace kernel claim) | "<90 ms" to spin up a workspace | ❌ snapshot for resume, no fork-from-warm | yes (resource caps per workspace) | yes (managed and self-hosted) | AGPL-3.0 |
 | [Alibaba OpenSandbox](https://github.com/alibaba/OpenSandbox) | abstraction layer over Docker / Kubernetes / gVisor / Kata / Firecracker | not advertised | ❌ (delegates to underlying runtime) | yes (via runtime + K8s) | yes (ingress gateway + egress policy) | Apache 2.0 |
 | [E2B](https://github.com/e2b-dev/E2B) | sandbox infra (Firecracker under the hood) | not advertised in OSS repo | ❌ (managed service "Sandbox" persists, doesn't fork) | yes (managed) | yes (managed) | Apache 2.0 |
-| [liteboxd](https://github.com/fslongjin/liteboxd) | OCI container on k3s | not advertised | ❌ | yes (K8s resource limits, Cilium policies) | token gateway, **default-deny egress via Cilium** | GPL-3.0 |
+| [BoxLite](https://github.com/boxlite-ai/boxlite) | microVM (KVM / Hypervisor.framework) running OCI containers | not advertised | ❌ (stateful "Boxes" persist across restarts, not fork-from-warm) | yes (KVM + seccomp + resource caps) | `allow_net` policy per Box | Apache 2.0 |
 | Modal | proprietary, snapshot-fork primitive ("Modal Sandbox") | not public; advertises sub-second cold-starts | ✅ (closed source) | ✅ | ✅ | proprietary SaaS |
 | Firecracker (raw) | microVM | ~750 ms full boot, no orchestration | snapshot/restore exists; CoW is up to caller | n/a — primitive only | n/a | Apache 2.0 |
 | Docker (runc) | OCI container | seconds for full image pull + start | ❌ | yes (cgroups) | n/a | Apache 2.0 |
@@ -158,10 +158,11 @@ collapses that cost across the entire fan-out — the parent imported
 numpy once, every child inherits the result. CubeSandbox has a
 faster pure cold-start; Daytona is the most polished workspace-style
 runtime; OpenSandbox is the right pick when you want one orchestration
-API across multiple isolation backends; liteboxd is the easiest path
-when you already run k3s and want default-deny egress for free.
-Modal is the only existing production system with the "fork from
-warm" primitive — forkd is the open-source analogue.
+API across multiple isolation backends; BoxLite ("the SQLite of
+sandbox") is the right pick when you want an embeddable, daemon-less
+microVM runtime that works on macOS too. Modal is the only existing
+production system with the "fork from warm" primitive — forkd is the
+open-source analogue.
 
 **Where forkd is not the right pick.** Function-level snapshot
 runtimes that give up real Linux (single-vCPU, serial I/O only) can

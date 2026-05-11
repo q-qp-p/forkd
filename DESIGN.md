@@ -217,21 +217,36 @@ fork-from-warm; if you want that on top of OpenSandbox, you'd plug a
 runtime that supports it. Conceptually forkd could be slotted in as
 such a runtime in a future integration.
 
-### liteboxd
+### BoxLite
 
-[liteboxd](https://github.com/fslongjin/liteboxd) is a lightweight
-sandbox platform that runs each sandbox as a container in a k3s
-cluster. It's the right choice when you already operate Kubernetes
-and want a sandbox runtime that fits naturally into that stack. The
-notable property forkd doesn't yet have is **default-deny egress
-enforced via Cilium network policies**, plus per-template ingress/
-egress controls behind a token gateway. Cold-start numbers are not
-published. The license is **GPL-3.0**, which makes the same
-commercial-use distinction as Daytona's AGPL: think carefully before
-embedding the runtime in a closed-source product. Different
-primitive (container, not microVM) and different operational story
-(K8s vs single-binary daemon) mean the projects target different
-adopters.
+[BoxLite](https://github.com/boxlite-ai/boxlite) bills itself as
+"the SQLite of sandbox" — an embeddable microVM runtime with no
+daemon, designed to scale from a laptop to the cloud without
+changing primitives. Each Box runs an OCI container inside a
+hardware-isolated VM (KVM on Linux, Hypervisor.framework on macOS),
+with seccomp on the host side and `allow_net` for egress policy per
+Box. Apache 2.0, primarily Rust + TypeScript + Go.
+
+The interesting contrast with forkd is the **stateful Box model**.
+BoxLite Boxes persist packages and files across stop/restart cycles:
+you `apt install` once and that survives the next boot. forkd's
+parent snapshot does something superficially similar — the parent's
+RAM survives — but the semantics differ:
+
+- BoxLite optimises for **one long-lived sandbox per workload**:
+  start it, fill it with state, suspend, resume later, never rebuild.
+- forkd optimises for **N short-lived children per parent**: the
+  parent is the template, every child gets a fresh CoW divergence,
+  children die freely.
+
+Both designs avoid re-paying setup cost. They're complementary, not
+competing — BoxLite is the right call when each agent owns a
+persistent workspace; forkd is the right call when you fan out from
+a warmed template. BoxLite's cross-platform support (macOS via
+Hypervisor.framework) is a real differentiator forkd doesn't try to
+match — forkd is Linux+KVM only and unlikely to add macOS support
+because the snapshot-fork primitive depends on the host kernel's
+CoW semantics on `mmap(MAP_PRIVATE)`.
 
 ### E2B
 
