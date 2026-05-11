@@ -5,26 +5,37 @@ Firecracker microVMs and the constraints that drove the design.
 
 ## Overview
 
-```
-                 Parent VM
-                 ─────────
-   +-------------+   userspace warmed: Python, deps, models loaded
-   |  memory.bin |◄── mmap'd into every child Firecracker process
-   +-------------+
-   |  vmstate    |   vCPU regs, devices, MMIO state, virtio queues
-   +-------------+
+```mermaid
+flowchart LR
+    subgraph PARENT_LIFE["1. Parent lifecycle (once per parent image)"]
+        direction TB
+        boot["Vm::boot(BootConfig)<br/>Firecracker InstanceStart"]
+        warm["userspace warm-up<br/>Python imports, JIT, model load"]
+        pause["Vm::pause<br/>PATCH /vm Paused"]
+        snapshot["Vm::snapshot_to<br/>writes memory.bin + vmstate"]
+        boot --> warm --> pause --> snapshot
+    end
 
-         │ snapshot (Firecracker /snapshot/create)
-         ▼
+    subgraph FORK["2. Fork-out (per cohort of N children)"]
+        direction TB
+        spawn["Snapshot::restore_many_with<br/>spawn N Firecracker procs in parallel"]
+        load["PUT /snapshot/load on each<br/>mmap(memory.bin, MAP_PRIVATE)"]
+        place["place each PID into<br/>/sys/fs/cgroup/forkd/child-i<br/>memory.max = quota"]
+        ns["each child runs inside<br/>netns forkd-child-i"]
+        spawn --> load --> place --> ns
+    end
 
-   Child 1, Child 2, ... Child N
-   ──────────────────────────────
-   Each child is its own Firecracker process:
-     - mmap(memory.bin, MAP_PRIVATE) — kernel CoWs diverged pages
-     - PUT /snapshot/load — restores vCPU + device state
-     - PATCH /vm {state:Resumed} — runs from the snapshot point
-     - Cgroup leaf at /sys/fs/cgroup/forkd/child-N — memory.max
-     - Network namespace forkd-child-N — isolated tap + veth
+    subgraph RUN["3. Runtime per child"]
+        direction TB
+        cow["kernel CoWs diverged pages<br/>shared pages stay shared"]
+        agent["forkd-agent.py listens on :8888<br/>(ping / exec / eval over TCP)"]
+        cow --- agent
+    end
+
+    PARENT_LIFE --> FORK --> RUN
+
+    classDef phase fill:#ffffff,stroke:#52606d,color:#1f2933;
+    class PARENT_LIFE,FORK,RUN phase;
 ```
 
 The kernel does the hard part (CoW page management). forkd's job is
@@ -205,6 +216,22 @@ Apache 2.0, actively maintained. OpenSandbox does not itself implement
 fork-from-warm; if you want that on top of OpenSandbox, you'd plug a
 runtime that supports it. Conceptually forkd could be slotted in as
 such a runtime in a future integration.
+
+### liteboxd
+
+[liteboxd](https://github.com/fslongjin/liteboxd) is a lightweight
+sandbox platform that runs each sandbox as a container in a k3s
+cluster. It's the right choice when you already operate Kubernetes
+and want a sandbox runtime that fits naturally into that stack. The
+notable property forkd doesn't yet have is **default-deny egress
+enforced via Cilium network policies**, plus per-template ingress/
+egress controls behind a token gateway. Cold-start numbers are not
+published. The license is **GPL-3.0**, which makes the same
+commercial-use distinction as Daytona's AGPL: think carefully before
+embedding the runtime in a closed-source product. Different
+primitive (container, not microVM) and different operational story
+(K8s vs single-binary daemon) mean the projects target different
+adopters.
 
 ### E2B
 

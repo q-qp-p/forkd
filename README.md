@@ -74,30 +74,55 @@ For one sandbox doing the same numpy expression two ways:
 
 ## How it works
 
-```
-                 Parent VM
-                 ─────────
-   Boots once, /forkd-init.sh imports your runtime, pauses.
-   Snapshot writes vmstate + memory.bin to disk.
-                       │
-                       │  POST /v1/sandboxes  (n=100)
-                       ▼
-   ┌──────────────────────────────────────────────────┐
-   │ netns forkd-child-1     ...    netns forkd-child-100
-   │ ┌──────────┐                   ┌──────────┐
-   │ │ FC proc  │                   │ FC proc  │
-   │ │ mmap     │  ━━━━━━━━━━━━━━━━ │ mmap     │  ← same memory.bin
-   │ │ MAP_     │                   │ MAP_     │     file; kernel CoWs
-   │ │ PRIVATE  │                   │ PRIVATE  │     diverged pages
-   │ └──────────┘                   └──────────┘
-   │ cgroup forkd/child-1           cgroup forkd/child-100
-   │ memory.max = 256 MiB           memory.max = 256 MiB
-   └──────────────────────────────────────────────────┘
-        │ veth                           │ veth
-        └────────── host bridge forkd-br0 (NAT) ───┘
-                                  │
-                                  ▼  MASQUERADE
-                            uplink → internet
+```mermaid
+flowchart TB
+    %% ─── parent ───────────────────────────────────────────────
+    subgraph PARENT["Parent VM (booted once, warmed)"]
+        direction TB
+        runtime["PID 1<br/>Python + numpy + your deps<br/>imported into RAM"]
+    end
+
+    PARENT -- "pause + snapshot" --> SNAP["Snapshot on disk<br/>memory.bin (CoW source)<br/>vmstate (vCPU + devices)"]
+
+    %% ─── controller ───────────────────────────────────────────
+    CLIENT["Client (CLI / Python SDK)"] -- "POST /v1/sandboxes n=100" --> CTL["forkd-controller<br/>REST · auth · audit · /metrics"]
+    CTL -- "restore_many_with(...)" --> SNAP
+
+    %% ─── children ─────────────────────────────────────────────
+    subgraph CHILDREN["100 Child Firecracker processes (kernel CoW per page)"]
+        direction LR
+        subgraph NS1["netns forkd-child-1"]
+            C1["Child 1<br/>mmap MAP_PRIVATE<br/>cgroup memory.max"]
+        end
+        subgraph NS2["netns forkd-child-2"]
+            C2["Child 2<br/>mmap MAP_PRIVATE<br/>cgroup memory.max"]
+        end
+        subgraph NSN["netns forkd-child-100"]
+            CN["Child 100<br/>mmap MAP_PRIVATE<br/>cgroup memory.max"]
+        end
+    end
+
+    SNAP -. "shared file<br/>(read-mostly)" .-> C1
+    SNAP -. "shared file" .-> C2
+    SNAP -. "shared file" .-> CN
+
+    %% ─── network ──────────────────────────────────────────────
+    C1 -- "veth" --> BR["host bridge forkd-br0<br/>MASQUERADE"]
+    C2 -- "veth" --> BR
+    CN -- "veth" --> BR
+    BR --> UPLINK(("uplink → internet"))
+
+    %% styling
+    classDef parent fill:#e8f3ec,stroke:#4c956c,color:#1f2933;
+    classDef snap   fill:#fff3df,stroke:#d4a259,color:#1f2933;
+    classDef ctl    fill:#e6efff,stroke:#5b7dba,color:#1f2933;
+    classDef child  fill:#ffffff,stroke:#52606d,color:#1f2933;
+    classDef net    fill:#f1f3f5,stroke:#8d99ae,color:#1f2933;
+    class PARENT,runtime parent;
+    class SNAP snap;
+    class CTL,CLIENT ctl;
+    class NS1,NS2,NSN,C1,C2,CN child;
+    class BR,UPLINK net;
 ```
 
 See [`DESIGN.md`](./DESIGN.md) for the full design and the open
@@ -121,6 +146,7 @@ not designed for.
 | [Daytona](https://github.com/daytonaio/daytona) | OCI workspace (Docker-compatible, per-workspace kernel claim) | "<90 ms" to spin up a workspace | ❌ snapshot for resume, no fork-from-warm | yes (resource caps per workspace) | yes (managed and self-hosted) | AGPL-3.0 |
 | [Alibaba OpenSandbox](https://github.com/alibaba/OpenSandbox) | abstraction layer over Docker / Kubernetes / gVisor / Kata / Firecracker | not advertised | ❌ (delegates to underlying runtime) | yes (via runtime + K8s) | yes (ingress gateway + egress policy) | Apache 2.0 |
 | [E2B](https://github.com/e2b-dev/E2B) | sandbox infra (Firecracker under the hood) | not advertised in OSS repo | ❌ (managed service "Sandbox" persists, doesn't fork) | yes (managed) | yes (managed) | Apache 2.0 |
+| [liteboxd](https://github.com/fslongjin/liteboxd) | OCI container on k3s | not advertised | ❌ | yes (K8s resource limits, Cilium policies) | token gateway, **default-deny egress via Cilium** | GPL-3.0 |
 | Modal | proprietary, snapshot-fork primitive ("Modal Sandbox") | not public; advertises sub-second cold-starts | ✅ (closed source) | ✅ | ✅ | proprietary SaaS |
 | Firecracker (raw) | microVM | ~750 ms full boot, no orchestration | snapshot/restore exists; CoW is up to caller | n/a — primitive only | n/a | Apache 2.0 |
 | Docker (runc) | OCI container | seconds for full image pull + start | ❌ | yes (cgroups) | n/a | Apache 2.0 |
@@ -132,9 +158,10 @@ collapses that cost across the entire fan-out — the parent imported
 numpy once, every child inherits the result. CubeSandbox has a
 faster pure cold-start; Daytona is the most polished workspace-style
 runtime; OpenSandbox is the right pick when you want one orchestration
-API across multiple isolation backends. Modal is the only existing
-production system with the "fork from warm" primitive — forkd is the
-open-source analogue.
+API across multiple isolation backends; liteboxd is the easiest path
+when you already run k3s and want default-deny egress for free.
+Modal is the only existing production system with the "fork from
+warm" primitive — forkd is the open-source analogue.
 
 **Where forkd is not the right pick.** Function-level snapshot
 runtimes that give up real Linux (single-vCPU, serial I/O only) can
