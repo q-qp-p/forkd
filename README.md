@@ -1,3 +1,5 @@
+<br/>
+
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
@@ -13,8 +15,12 @@
   <a href="https://github.com/deeplethe/forkd/releases"><img alt="Release" src="https://img.shields.io/github/v/release/deeplethe/forkd?style=flat-square&color=4c956c"></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square"></a>
   <a href="https://firecracker-microvm.github.io"><img alt="Firecracker" src="https://img.shields.io/badge/built%20on-Firecracker-blue?style=flat-square"></a>
-  <a href="https://www.rust-lang.org"><img alt="Rust" src="https://img.shields.io/badge/rust-stable-orange?style=flat-square&logo=rust"></a>
+  <a href="https://github.com/deeplethe/forkd/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/deeplethe/forkd?style=flat-square&color=eab308&logo=github"></a>
 </p>
+
+<br/>
+
+## Fork 100 microVMs in 101 ms.
 
 A microVM sandbox runtime that forks children from a warmed parent
 snapshot, so each child inherits the parent's address space
@@ -31,7 +37,7 @@ diverge.
 The result is two properties at once: per-child KVM isolation, and a
 spawn cost that's closer to `fork(2)` than to a cold-boot VM.
 
----
+<br/>
 
 ## Properties
 
@@ -48,7 +54,7 @@ spawn cost that's closer to `fork(2)` than to a cold-boot VM.
   Prometheus `/metrics`, append-only JSON audit log, systemd unit.
 - **Open source.** Apache 2.0, no vendor SDK.
 
----
+<br/>
 
 ## Benchmarks
 
@@ -91,7 +97,7 @@ For one sandbox doing the same numpy expression two ways:
 | `sandbox.eval("numpy.zeros(5).tolist()")` | 1 ms | Reuses the warmed Python in PID 1 |
 | `sandbox.commands.run("python3 -c '...'")` | 96 ms | Cold subprocess re-imports numpy |
 
----
+<br/>
 
 ## How it works
 
@@ -149,7 +155,7 @@ flowchart TB
 See [`DESIGN.md`](./DESIGN.md) for the full design and the open
 problems the architecture leaves on the table.
 
----
+<br/>
 
 ## How forkd compares
 
@@ -160,18 +166,28 @@ upstream project** unless they match a row in our benchmark chart
 above. forkd does not measure other projects on workloads they were
 not designed for.
 
-| Project | Primitive | Cold-start (advertised) | Fork-from-warm | Per-child resource quotas | Built-in auth / TLS | License |
-|---|---|---:|:---:|:---:|:---:|---|
-| **forkd** | microVM (Firecracker) + snapshot CoW fork | 101 ms (measured, N=100, import-numpy task) | ✅ | ✅ cgroup v2 `memory.max` today; cpu/io/pids next | ✅ bearer + rustls TLS | Apache 2.0 |
-| [Tencent CubeSandbox](https://github.com/TencentCloud/CubeSandbox) | microVM (RustVMM + KVM) | "<60 ms" cold, "<150 ms under concurrent" | "coming soon" (event-level snapshot rollback) | per-instance < 5 MiB; quotas not documented | not documented in OSS docs | Apache 2.0 |
-| [Daytona](https://github.com/daytonaio/daytona) | OCI workspace (Docker-compatible, per-workspace kernel claim) | "<90 ms" to spin up a workspace | ❌ snapshot for resume, no fork-from-warm | yes (resource caps per workspace) | yes (managed and self-hosted) | AGPL-3.0 |
-| [Alibaba OpenSandbox](https://github.com/alibaba/OpenSandbox) | abstraction layer over Docker / Kubernetes / gVisor / Kata / Firecracker | not advertised | ❌ (delegates to underlying runtime) | yes (via runtime + K8s) | yes (ingress gateway + egress policy) | Apache 2.0 |
-| [E2B](https://github.com/e2b-dev/E2B) | sandbox infra (Firecracker under the hood) | not advertised in OSS repo | ❌ (managed service "Sandbox" persists, doesn't fork) | yes (managed) | yes (managed) | Apache 2.0 |
-| [BoxLite](https://github.com/boxlite-ai/boxlite) | microVM (KVM / Hypervisor.framework) running OCI containers | not advertised | ❌ (stateful "Boxes" persist across restarts, not fork-from-warm) | yes (KVM + seccomp + resource caps) | `allow_net` policy per Box | Apache 2.0 |
-| Modal | proprietary, snapshot-fork primitive ("Modal Sandbox") | not public; advertises sub-second cold-starts | ✅ (closed source) | ✅ | ✅ | proprietary SaaS |
-| Firecracker (raw) | microVM | ~750 ms full boot, no orchestration | snapshot/restore exists; CoW is up to caller | n/a — primitive only | n/a | Apache 2.0 |
-| Docker (runc) | OCI container | seconds for full image pull + start | ❌ | yes (cgroups) | n/a | Apache 2.0 |
-| gVisor (runsc) | userspace kernel container | seconds | ❌ | yes (cgroups) | n/a | Apache 2.0 |
+| Project | Primitive | Cold-start (N=100) | Fork-from-warm | Quotas | Auth / TLS | License |
+|---|---|---|:---:|---|---|---|
+| **forkd** | Firecracker + snapshot CoW | **101 ms** | ✓ | cgroup `memory.max` | bearer + rustls | Apache 2.0 |
+| [CubeSandbox][cs] | RustVMM + KVM microVM | 20.3 s¹ | "coming soon" | <5 MiB / instance | not in OSS | Apache 2.0 |
+| [Daytona][dy] | OCI workspace | <90 ms² | ✗ | per workspace | API keys (platform) | **AGPL-3.0** |
+| [OpenSandbox][os] | Docker / K8s + gVisor / Kata / FC | 122 s | ✗ | via runtime | gateway (k8s) | Apache 2.0 |
+| [E2B][e2b] | Firecracker (in [infra][e2b-infra]) | not in OSS | ✗ | platform | API keys (cloud) | Apache 2.0 |
+| [BoxLite][bl] | KVM / Hypervisor.framework + OCI | 113 s | ✗ stateful Box | KVM + seccomp | egress policy only | Apache 2.0 |
+| Modal | proprietary snapshot fork | not public | ✓ | ✓ | ✓ | proprietary |
+| Firecracker raw | microVM only | 759 ms | manual | n/a | n/a | Apache 2.0 |
+| Docker (runc) | OCI container | 335 s | ✗ | cgroups | n/a | Apache 2.0 |
+| gVisor (runsc) | userspace kernel | 289 s | ✗ | cgroups | n/a | Apache 2.0 |
+
+¹ 77/100 succeeded on this host due to a reflink-copy storage bug under concurrent load; CubeSandbox advertises **<60 ms** single-instance cold-start (P95 90 ms at 50-concurrent). See [bench/CUBESANDBOX.md](./bench/CUBESANDBOX.md).
+² Daytona's advertised number; we did not measure it (workspace runtime, not a fan-out-comparable shape).
+
+[cs]: https://github.com/TencentCloud/CubeSandbox
+[dy]: https://github.com/daytonaio/daytona
+[os]: https://github.com/alibaba/OpenSandbox
+[e2b]: https://github.com/e2b-dev/E2B
+[e2b-infra]: https://github.com/e2b-dev/infra
+[bl]: https://github.com/boxlite-ai/boxlite
 
 **Where forkd fits.** If your workload imports heavy Python or ML
 state at the start of every request, forkd's parent-snapshot CoW
@@ -190,7 +206,7 @@ runtimes that give up real Linux (single-vCPU, serial I/O only) can
 beat forkd's ~100 ms by an order of magnitude — at the cost of not
 running real Python servers, `apt install`, or outbound HTTPS.
 
----
+<br/>
 
 ## Quick start
 
@@ -244,7 +260,7 @@ with Sandbox() as sb:
     print(sb.eval("numpy.zeros(5).tolist()"))    # reuses warmed PID 1
 ```
 
----
+<br/>
 
 ## Operating in daemon mode
 
@@ -277,7 +293,7 @@ Full API reference: [`docs/API.md`](./docs/API.md).
 Operator runbook: [`docs/RUNBOOK.md`](./docs/RUNBOOK.md).
 Security posture: [`docs/SECURITY.md`](./docs/SECURITY.md).
 
----
+<br/>
 
 ## Repository layout
 
@@ -296,7 +312,7 @@ bench/                  Benchmark harness, chart generators, results
 docs/                   API.md, SECURITY.md, RUNBOOK.md
 ```
 
----
+<br/>
 
 ## Status
 
@@ -319,7 +335,7 @@ Production-readiness items not yet in this release:
 
 The roadmap and tracked work live in [GitHub issues](https://github.com/deeplethe/forkd/issues).
 
----
+<br/>
 
 ## Contributing
 
@@ -330,7 +346,18 @@ Pull requests welcome. Before opening one, please:
 2. `cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test --all` locally.
 3. Sign-off your commits (`git commit -s`).
 
----
+<br/>
+
+## Star history
+
+<a href="https://star-history.com/#deeplethe/forkd&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=deeplethe/forkd&type=Date&theme=dark">
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=deeplethe/forkd&type=Date">
+  </picture>
+</a>
+
+<br/>
 
 ## License
 
