@@ -68,6 +68,29 @@ impl NetworkConfig {
     }
 }
 
+/// A per-tag persistent volume: a host directory or block-image file that
+/// gets attached as `/dev/vdb..z` inside the guest and (optionally) mounted
+/// at a configured path by `/forkd-init.sh`.
+///
+/// Volumes survive across forks of the same snapshot tag — every child
+/// sees the same host file. Use them for pip caches, model weights,
+/// shared scratch space, etc. Volumes do **not** affect memory CoW: each
+/// child still inherits the parent's RAM image via `mmap(MAP_PRIVATE)`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeSpec {
+    /// Path on the host. Can be a directory (bind-mounted via virtiofs is
+    /// not currently supported; we use a block-image file instead) or an
+    /// ext4 image file. For directories, call `mke2fs`/`tar` separately
+    /// to produce an image; for now the path must be a regular file.
+    pub host_path: PathBuf,
+    /// Mount point inside the guest, e.g. `/opt/cache`. The init script
+    /// mounts the corresponding `/dev/vdX` device here.
+    pub guest_path: PathBuf,
+    /// If `true`, the drive is exposed read-only.
+    #[serde(default)]
+    pub read_only: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootConfig {
     pub kernel: PathBuf,
@@ -80,6 +103,10 @@ pub struct BootConfig {
     pub rootfs_read_only: bool,
     /// Optional virtio-net interface. If `None`, the guest has no network.
     pub network: Option<NetworkConfig>,
+    /// Extra block-device volumes to attach as /dev/vdb, /dev/vdc, ...
+    /// in declaration order. Empty by default.
+    #[serde(default)]
+    pub volumes: Vec<VolumeSpec>,
 }
 
 impl BootConfig {
@@ -96,6 +123,7 @@ impl BootConfig {
             work_dir,
             rootfs_read_only: true,
             network: None,
+            volumes: Vec::new(),
         }
     }
 
@@ -115,6 +143,7 @@ impl BootConfig {
             work_dir,
             rootfs_read_only: false,
             network: None,
+            volumes: Vec::new(),
         }
     }
 
@@ -124,6 +153,40 @@ impl BootConfig {
         self.network = Some(net);
         self
     }
+
+    /// Attach a persistent volume. Volumes appear in the guest as
+    /// `/dev/vdb`, `/dev/vdc`, ... in the order they're added, and are
+    /// mounted at `volume.guest_path` by `/forkd-init.sh` based on the
+    /// `forkd.mounts=` kernel cmdline hint this method appends.
+    pub fn with_volume(mut self, volume: VolumeSpec) -> Self {
+        // Volumes occupy /dev/vdb onwards (vda is rootfs); index i → vdN.
+        let index = self.volumes.len();
+        let dev = volume_device_name(index);
+        let hint = format!("{}:{}", dev, volume.guest_path.display());
+        // Append (or extend) the forkd.mounts= cmdline hint.
+        match self.boot_args.find("forkd.mounts=") {
+            Some(start) => {
+                // existing hint — append a comma-separated entry.
+                let end = self.boot_args[start..]
+                    .find(' ')
+                    .map(|n| start + n)
+                    .unwrap_or(self.boot_args.len());
+                self.boot_args.insert_str(end, &format!(",{hint}"));
+            }
+            None => {
+                self.boot_args.push_str(&format!(" forkd.mounts={hint}"));
+            }
+        }
+        self.volumes.push(volume);
+        self
+    }
+}
+
+/// `0 → "vdb"`, `1 → "vdc"`, ... up to `23 → "vdy"`. After that, callers
+/// hit virtio-blk's practical drive ceiling; we cap to keep the API simple.
+pub fn volume_device_name(index: usize) -> String {
+    let letter = (b'b' + index as u8) as char;
+    format!("vd{letter}")
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +235,12 @@ impl Vm {
 pub struct Snapshot {
     pub vmstate: PathBuf,
     pub memory: PathBuf,
+    /// Volumes attached at parent boot time. Children re-attach the same
+    /// host paths during restore so the guest's mount points line up.
+    /// `#[serde(default)]` for backward compat with snapshots written
+    /// before volumes existed.
+    #[serde(default)]
+    pub volumes: Vec<VolumeSpec>,
 }
 
 /// Options controlling a fork-many operation.
@@ -586,6 +655,26 @@ impl Vm {
         });
         api_call(&sock, "PUT", "/drives/rootfs", &body.to_string())?;
 
+        // Extra volume drives — vdb, vdc, ... — in declaration order.
+        // The cmdline already includes a forkd.mounts= hint (added by
+        // BootConfig::with_volume) so /forkd-init.sh knows where to
+        // mount each device after boot.
+        for (i, vol) in cfg.volumes.iter().enumerate() {
+            let drive_id = format!("vol{i}");
+            let body = serde_json::json!({
+                "drive_id": &drive_id,
+                "path_on_host": &vol.host_path,
+                "is_root_device": false,
+                "is_read_only": vol.read_only,
+            });
+            api_call(
+                &sock,
+                "PUT",
+                &format!("/drives/{drive_id}"),
+                &body.to_string(),
+            )?;
+        }
+
         let body = serde_json::json!({
             "vcpu_count": cfg.vcpu_count,
             "mem_size_mib": cfg.mem_size_mib,
@@ -628,8 +717,16 @@ impl Vm {
         api_call(&self.sock, "PATCH", "/vm", r#"{"state":"Paused"}"#)
     }
 
-    /// Write a Full snapshot to disk. VM must be paused first.
-    pub fn snapshot_to(&self, vmstate: PathBuf, memory: PathBuf) -> Result<Snapshot> {
+    /// Write a Full snapshot to disk. VM must be paused first. `volumes` is
+    /// the list of volumes that were attached at boot — the snapshot stores
+    /// them so subsequent restores reattach the same host files at the same
+    /// guest device positions.
+    pub fn snapshot_to(
+        &self,
+        vmstate: PathBuf,
+        memory: PathBuf,
+        volumes: Vec<VolumeSpec>,
+    ) -> Result<Snapshot> {
         if let Some(p) = vmstate.parent() {
             std::fs::create_dir_all(p).context("create snapshot dir")?;
         }
@@ -645,7 +742,11 @@ impl Vm {
             &body.to_string(),
             SNAPSHOT_TIMEOUT_SECS,
         )?;
-        Ok(Snapshot { vmstate, memory })
+        Ok(Snapshot {
+            vmstate,
+            memory,
+            volumes,
+        })
     }
 
     /// Send CtrlAltDel to the guest. Best-effort; ignored if VM unresponsive.
@@ -830,6 +931,50 @@ mod tests {
     }
 
     #[test]
+    fn volume_device_name_progression() {
+        assert_eq!(volume_device_name(0), "vdb");
+        assert_eq!(volume_device_name(1), "vdc");
+        assert_eq!(volume_device_name(22), "vdx");
+    }
+
+    #[test]
+    fn boot_config_with_volume_appends_cmdline_hint() {
+        let cfg = BootConfig::ext4_rw("/tmp/k".into(), "/tmp/r".into(), "/tmp/w".into())
+            .with_volume(VolumeSpec {
+                host_path: "/var/lib/forkd/vol/pyagent.img".into(),
+                guest_path: "/opt/cache".into(),
+                read_only: false,
+            });
+        assert_eq!(cfg.volumes.len(), 1);
+        assert!(
+            cfg.boot_args.contains("forkd.mounts=vdb:/opt/cache"),
+            "expected forkd.mounts in boot_args, got: {}",
+            cfg.boot_args
+        );
+    }
+
+    #[test]
+    fn boot_config_with_multiple_volumes_extends_hint() {
+        let cfg = BootConfig::ext4_rw("/tmp/k".into(), "/tmp/r".into(), "/tmp/w".into())
+            .with_volume(VolumeSpec {
+                host_path: "/a.img".into(),
+                guest_path: "/opt/a".into(),
+                read_only: false,
+            })
+            .with_volume(VolumeSpec {
+                host_path: "/b.img".into(),
+                guest_path: "/opt/b".into(),
+                read_only: true,
+            });
+        assert_eq!(cfg.volumes.len(), 2);
+        assert!(
+            cfg.boot_args.contains("forkd.mounts=vdb:/opt/a,vdc:/opt/b"),
+            "boot_args was: {}",
+            cfg.boot_args
+        );
+    }
+
+    #[test]
     fn boot_config_with_network_attaches_iface() {
         let cfg = BootConfig::quickstart("/tmp/k".into(), "/tmp/r".into(), "/tmp/w".into())
             .with_network(NetworkConfig::default_tap("forkd-tap0"));
@@ -848,10 +993,17 @@ mod tests {
         let s = Snapshot {
             vmstate: "/tmp/v".into(),
             memory: "/tmp/m".into(),
+            volumes: vec![VolumeSpec {
+                host_path: "/var/lib/forkd/vol/pyagent.img".into(),
+                guest_path: "/opt/cache".into(),
+                read_only: false,
+            }],
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Snapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(s.vmstate, back.vmstate);
         assert_eq!(s.memory, back.memory);
+        assert_eq!(s.volumes.len(), back.volumes.len());
+        assert_eq!(s.volumes[0].guest_path, back.volumes[0].guest_path);
     }
 }

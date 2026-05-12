@@ -146,10 +146,18 @@ async fn create_snapshot(
         std::thread::sleep(boot_wait);
         vm.pause()?;
         std::fs::create_dir_all(&snap_dir_for_task)?;
-        vm.snapshot_to(
+        // Volumes via daemon snapshot API will land in a follow-up commit;
+        // for now snapshots created through the daemon are volume-less.
+        // Use the CLI's `forkd snapshot --volume` for tag-shared caches.
+        let snap = vm.snapshot_to(
             snap_dir_for_task.join("vmstate"),
             snap_dir_for_task.join("memory.bin"),
+            Vec::new(),
         )?;
+        // Persist Snapshot metadata so subsequent forks read back the same
+        // (possibly volume-bearing) snapshot description.
+        let meta = serde_json::to_vec_pretty(&snap)?;
+        std::fs::write(snap_dir_for_task.join("snapshot.json"), meta)?;
         vm.kill()?;
         Ok(())
     })
@@ -260,9 +268,19 @@ async fn create_sandbox(
             dir
         }
     };
-    let snapshot = forkd_vmm::Snapshot {
-        vmstate: snap_dir.join("vmstate"),
-        memory: snap_dir.join("memory.bin"),
+    // Prefer the persisted snapshot.json (carries volumes); fall back
+    // to constructing from vmstate + memory.bin for backward compat
+    // with snapshots written before the meta file existed.
+    let snapshot = match std::fs::read(snap_dir.join("snapshot.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<forkd_vmm::Snapshot>(&raw).ok())
+    {
+        Some(s) => s,
+        None => forkd_vmm::Snapshot {
+            vmstate: snap_dir.join("vmstate"),
+            memory: snap_dir.join("memory.bin"),
+            volumes: Vec::new(),
+        },
     };
 
     let tag = req.snapshot_tag.clone();

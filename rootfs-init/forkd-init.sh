@@ -10,6 +10,27 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null
 # images. Subprocess invocations from the agent inherit this.
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+# Persistent volumes — see VolumeSpec / BootConfig::with_volume on the host.
+# The kernel cmdline carries an entry of the form:
+#   forkd.mounts=vdb:/opt/cache,vdc:/var/cache/pip
+# where each pair is "<device>:<guest mount path>".
+mounts="$(grep -oE 'forkd\.mounts=[^ ]+' /proc/cmdline | head -1 | cut -d= -f2-)"
+if [ -n "$mounts" ]; then
+    IFS=',' read -ra _pairs <<<"$mounts"
+    for pair in "${_pairs[@]}"; do
+        dev="${pair%%:*}"
+        target="${pair#*:}"
+        if [ -z "$dev" ] || [ -z "$target" ] || [ "$dev" = "$target" ]; then
+            echo "forkd-init: ignoring malformed mount entry '$pair'" >&2
+            continue
+        fi
+        mkdir -p "$target"
+        if ! mount "/dev/$dev" "$target" 2>/dev/null; then
+            echo "forkd-init: WARN mount /dev/$dev -> $target failed" >&2
+        fi
+    done
+fi
+
 # Ubuntu Docker images symlink /etc/resolv.conf to a systemd-resolved
 # stub that doesn't exist in our minimal init. Point to public resolvers
 # so the guest can do DNS over the netns + host bridge NAT path.

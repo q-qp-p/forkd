@@ -50,6 +50,14 @@ enum Cmd {
         /// Seconds to wait for guest to settle before snapshotting.
         #[arg(long, default_value_t = 10)]
         boot_wait_secs: u64,
+        /// Persistent volume to attach to every child of this snapshot.
+        /// Format: HOST_FILE:GUEST_PATH[:ro]. Repeatable for up to 24
+        /// volumes (vdb..vdy). The host file must be an existing ext4
+        /// image (create one with `mkfs.ext4 /var/lib/forkd/vol/<tag>.img`).
+        /// Use volumes for pip caches, model weights, agent scratch space —
+        /// content survives across forks of the same tag.
+        #[arg(long = "volume", value_name = "HOST:GUEST[:ro]")]
+        volume: Vec<String>,
     },
     /// Fork N children from a tagged snapshot.
     Fork {
@@ -189,7 +197,8 @@ fn main() -> Result<()> {
             rw,
             tap,
             boot_wait_secs,
-        } => snapshot_cmd(tag, kernel, rootfs, rw, tap, boot_wait_secs),
+            volume,
+        } => snapshot_cmd(tag, kernel, rootfs, rw, tap, boot_wait_secs, volume),
         Cmd::Fork {
             tag,
             n,
@@ -334,15 +343,12 @@ fn run_cmd(
     // 2. Snapshot a one-off tag.
     let tag = format!("run-{slug}");
     eprintln!("==> snapshot --tag {tag}");
-    snapshot_cmd(tag.clone(), kernel, rootfs, true, Some(tap), 10)?;
+    snapshot_cmd(tag.clone(), kernel, rootfs, true, Some(tap), 10, Vec::new())?;
 
     // 3. Fork 1 child + exec the command via the guest agent.
     eprintln!("==> spawning sandbox and running command...");
     let snap_dir = snapshot_dir(&tag);
-    let snapshot = Snapshot {
-        vmstate: snap_dir.join("vmstate"),
-        memory: snap_dir.join("memory.bin"),
-    };
+    let snapshot = load_snapshot_meta(&snap_dir)?;
     let work_dir = std::env::temp_dir().join(format!("forkd-run-{tag}"));
     let result = snapshot
         .restore_many_with(
@@ -486,12 +492,33 @@ fn snapshot_cmd(
     rw_flag: bool,
     tap: Option<String>,
     boot_wait_secs: u64,
+    volume_specs: Vec<String>,
 ) -> Result<()> {
     if !kernel.exists() {
         bail!("kernel not found: {}", kernel.display());
     }
     if !rootfs.exists() {
         bail!("rootfs not found: {}", rootfs.display());
+    }
+
+    // Parse and validate volumes before booting so we fail early.
+    let volumes: Vec<forkd_vmm::VolumeSpec> = volume_specs
+        .iter()
+        .map(|s| parse_volume(s))
+        .collect::<Result<_>>()?;
+    if volumes.len() > 24 {
+        bail!("at most 24 volumes are supported (vdb..vdy)");
+    }
+    for v in &volumes {
+        if !v.host_path.exists() {
+            bail!(
+                "volume host file not found: {}\n\
+                 create it with: sudo dd if=/dev/zero of={} bs=1M count=512 && sudo mkfs.ext4 -F {}",
+                v.host_path.display(),
+                v.host_path.display(),
+                v.host_path.display()
+            );
+        }
     }
 
     // Auto-detect ext4 by extension; or explicit --rw flag.
@@ -521,6 +548,16 @@ fn snapshot_cmd(
         cfg = cfg.with_network(net);
     }
 
+    for v in &volumes {
+        eprintln!(
+            "    volume: {} → {} ({})",
+            v.host_path.display(),
+            v.guest_path.display(),
+            if v.read_only { "ro" } else { "rw" }
+        );
+        cfg = cfg.with_volume(v.clone());
+    }
+
     eprintln!("==> booting parent VM (work_dir={})...", work_dir.display());
     let mut vm = Vm::boot(&cfg).context("boot parent")?;
     eprintln!("    firecracker pid: {}", vm.pid());
@@ -538,12 +575,66 @@ fn snapshot_cmd(
 
     eprintln!("==> snapshotting to {}...", snap_dir.display());
     let t = Instant::now();
-    vm.snapshot_to(vmstate, memory).context("snapshot create")?;
+    let snap = vm
+        .snapshot_to(vmstate, memory, volumes)
+        .context("snapshot create")?;
     eprintln!("    snapshot took {} ms", t.elapsed().as_millis());
+
+    // Persist Snapshot metadata so subsequent `forkd fork` / `forkd run`
+    // invocations recover the volume list (the vmstate file alone
+    // doesn't carry our VolumeSpec annotations).
+    let meta = serde_json::to_vec_pretty(&snap).context("serialize snapshot meta")?;
+    std::fs::write(snap_dir.join("snapshot.json"), meta)
+        .context("write snapshot.json")?;
 
     vm.kill().context("kill parent")?;
     eprintln!("✓ tag '{tag}' ready. Try: forkd fork --tag {tag} --n 10");
     Ok(())
+}
+
+/// Load a `Snapshot` from `<snap_dir>/snapshot.json` if it exists,
+/// otherwise fall back to constructing one from `vmstate` + `memory.bin`
+/// with no volumes (backward compat for snapshots created before this
+/// metadata file was introduced).
+fn load_snapshot_meta(snap_dir: &std::path::Path) -> Result<Snapshot> {
+    let meta_path = snap_dir.join("snapshot.json");
+    if meta_path.exists() {
+        let raw = std::fs::read(&meta_path)
+            .with_context(|| format!("read {}", meta_path.display()))?;
+        let snap: Snapshot = serde_json::from_slice(&raw)
+            .with_context(|| format!("parse {}", meta_path.display()))?;
+        return Ok(snap);
+    }
+    Ok(Snapshot {
+        vmstate: snap_dir.join("vmstate"),
+        memory: snap_dir.join("memory.bin"),
+        volumes: Vec::new(),
+    })
+}
+
+/// Parse a `HOST:GUEST[:ro]` volume spec string.
+fn parse_volume(s: &str) -> Result<forkd_vmm::VolumeSpec> {
+    // Split into at most 3 parts so a colon inside a path (rare on Linux,
+    // but possible) doesn't break parsing of the trailing `:ro` flag.
+    let parts: Vec<&str> = s.splitn(3, ':').collect();
+    if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+        bail!(
+            "invalid --volume spec '{s}'; expected HOST:GUEST or HOST:GUEST:ro"
+        );
+    }
+    let read_only = match parts.get(2) {
+        None => false,
+        Some(&"ro") => true,
+        Some(&"rw") => false,
+        Some(other) => bail!(
+            "invalid --volume spec '{s}'; trailing flag must be 'ro' or 'rw', got '{other}'"
+        ),
+    };
+    Ok(forkd_vmm::VolumeSpec {
+        host_path: PathBuf::from(parts[0]),
+        guest_path: PathBuf::from(parts[1]),
+        read_only,
+    })
 }
 
 fn fork_cmd(
@@ -554,10 +645,7 @@ fn fork_cmd(
     memory_limit_mib: Option<u64>,
 ) -> Result<()> {
     let snap_dir = snapshot_dir(&tag);
-    let vmstate = snap_dir.join("vmstate");
-    let memory = snap_dir.join("memory.bin");
-
-    if !vmstate.exists() {
+    if !snap_dir.join("vmstate").exists() {
         bail!(
             "snapshot tag '{tag}' not found at {}\n\
              run 'forkd snapshot --tag {tag} ...' first",
@@ -565,7 +653,7 @@ fn fork_cmd(
         );
     }
 
-    let snapshot = Snapshot { vmstate, memory };
+    let snapshot = load_snapshot_meta(&snap_dir)?;
     let work_dir = std::env::temp_dir().join(format!("forkd-fork-{tag}"));
 
     eprintln!(
@@ -609,4 +697,41 @@ fn fork_cmd(
     drop(result); // triggers kill via Drop for any still alive
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_volume_basic() {
+        let v = parse_volume("/var/lib/forkd/vol/pyagent.img:/opt/cache").unwrap();
+        assert_eq!(v.host_path, PathBuf::from("/var/lib/forkd/vol/pyagent.img"));
+        assert_eq!(v.guest_path, PathBuf::from("/opt/cache"));
+        assert!(!v.read_only);
+    }
+
+    #[test]
+    fn parse_volume_read_only() {
+        let v = parse_volume("/var/lib/forkd/vol/models.img:/models:ro").unwrap();
+        assert!(v.read_only);
+    }
+
+    #[test]
+    fn parse_volume_explicit_rw() {
+        let v = parse_volume("/host.img:/guest:rw").unwrap();
+        assert!(!v.read_only);
+    }
+
+    #[test]
+    fn parse_volume_rejects_missing_guest() {
+        assert!(parse_volume("/host.img").is_err());
+        assert!(parse_volume("/host.img:").is_err());
+        assert!(parse_volume(":/guest").is_err());
+    }
+
+    #[test]
+    fn parse_volume_rejects_bad_flag() {
+        assert!(parse_volume("/host.img:/guest:wat").is_err());
+    }
 }
