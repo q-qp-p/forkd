@@ -270,6 +270,19 @@ with Sandbox() as sb:
     print(sb.eval("numpy.zeros(5).tolist()"))    # reuses warmed PID 1
 ```
 
+### Pre-built recipes
+
+Skip the rootfs design step — pick one of the [`recipes/`](./recipes/)
+and run its `build.sh`:
+
+| Recipe | When to pick |
+|---|---|
+| [`python-numpy/`](./recipes/python-numpy/) | Reproduce the benchmark; lightest Python + numpy |
+| [`e2b-codeinterpreter/`](./recipes/e2b-codeinterpreter/) | AI code-interpreter agents (E2B SDK-compatible) |
+| [`coding-agent/`](./recipes/coding-agent/) | SWE-bench / coding agents with `git` + dev tools |
+| [`nodejs/`](./recipes/nodejs/) | JS / TS workloads, Playwright fan-out |
+| [`agent-workbench/`](./recipes/agent-workbench/) | Kitchen sink — browser + VSCode + Jupyter + MCP |
+
 <br/>
 
 ## Operating in daemon mode
@@ -318,6 +331,9 @@ rootfs-init/
 sdk/python/             E2B-compatible Python SDK
 scripts/                Host-side helpers (KVM, Firecracker, netns, rootfs)
 packaging/systemd/      systemd unit for the controller
+recipes/                Pre-built parent-rootfs recipes (python-numpy,
+                        e2b-codeinterpreter, coding-agent, nodejs,
+                        agent-workbench). See recipes/README.md.
 bench/                  Benchmark harness, chart generators, results
 docs/                   API.md, SECURITY.md, RUNBOOK.md
 ```
