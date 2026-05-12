@@ -584,8 +584,7 @@ fn snapshot_cmd(
     // invocations recover the volume list (the vmstate file alone
     // doesn't carry our VolumeSpec annotations).
     let meta = serde_json::to_vec_pretty(&snap).context("serialize snapshot meta")?;
-    std::fs::write(snap_dir.join("snapshot.json"), meta)
-        .context("write snapshot.json")?;
+    std::fs::write(snap_dir.join("snapshot.json"), meta).context("write snapshot.json")?;
 
     vm.kill().context("kill parent")?;
     eprintln!("✓ tag '{tag}' ready. Try: forkd fork --tag {tag} --n 10");
@@ -599,8 +598,8 @@ fn snapshot_cmd(
 fn load_snapshot_meta(snap_dir: &std::path::Path) -> Result<Snapshot> {
     let meta_path = snap_dir.join("snapshot.json");
     if meta_path.exists() {
-        let raw = std::fs::read(&meta_path)
-            .with_context(|| format!("read {}", meta_path.display()))?;
+        let raw =
+            std::fs::read(&meta_path).with_context(|| format!("read {}", meta_path.display()))?;
         let snap: Snapshot = serde_json::from_slice(&raw)
             .with_context(|| format!("parse {}", meta_path.display()))?;
         return Ok(snap);
@@ -618,17 +617,15 @@ fn parse_volume(s: &str) -> Result<forkd_vmm::VolumeSpec> {
     // but possible) doesn't break parsing of the trailing `:ro` flag.
     let parts: Vec<&str> = s.splitn(3, ':').collect();
     if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
-        bail!(
-            "invalid --volume spec '{s}'; expected HOST:GUEST or HOST:GUEST:ro"
-        );
+        bail!("invalid --volume spec '{s}'; expected HOST:GUEST or HOST:GUEST:ro");
     }
     let read_only = match parts.get(2) {
         None => false,
         Some(&"ro") => true,
         Some(&"rw") => false,
-        Some(other) => bail!(
-            "invalid --volume spec '{s}'; trailing flag must be 'ro' or 'rw', got '{other}'"
-        ),
+        Some(other) => {
+            bail!("invalid --volume spec '{s}'; trailing flag must be 'ro' or 'rw', got '{other}'")
+        }
     };
     Ok(forkd_vmm::VolumeSpec {
         host_path: PathBuf::from(parts[0]),
