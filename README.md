@@ -199,22 +199,35 @@ not designed for.
 [e2b-infra]: https://github.com/e2b-dev/infra
 [bl]: https://github.com/boxlite-ai/boxlite
 
-**Where forkd fits.** If your workload imports heavy Python or ML
-state at the start of every request, forkd's parent-snapshot CoW
-collapses that cost across the entire fan-out — the parent imported
-numpy once, every child inherits the result. CubeSandbox has a
-faster pure cold-start; Daytona is the most polished workspace-style
-runtime; OpenSandbox is the right pick when you want one orchestration
-API across multiple isolation backends; BoxLite ("the SQLite of
-sandbox") is the right pick when you want an embeddable, daemon-less
-microVM runtime that works on macOS too. Modal is the only existing
-production system with the "fork from warm" primitive — forkd is the
-open-source analogue.
+**Where forkd fits.**
 
-**Where forkd is not the right pick.** Function-level snapshot
-runtimes that give up real Linux (single-vCPU, serial I/O only) can
-beat forkd's ~100 ms by an order of magnitude — at the cost of not
-running real Python servers, `apt install`, or outbound HTTPS.
+- **Code interpreters and tool-use sandboxes.** Each conversation
+  turn or tool call spawns a fresh isolated child; the warmed parent
+  carries the runtime, so per-request `import numpy` / `import torch`
+  collapses to zero.
+- **Evaluation harnesses.** Hundreds of repository checkouts or test
+  rollouts in parallel — SWE-bench-style — without paying Docker
+  cold-start per task.
+- **Per-user code execution at fan-out scale.** Many short-lived
+  sandboxes sharing one warmed parent, each child KVM-isolated by
+  construction.
+- **Untrusted-code execution in CI.** `git clone`, `pip install`,
+  `pytest` inside a real Linux VM, not a container namespace.
+- **Self-hosted alternative to managed sandbox SaaS.** One Linux box
+  with KVM, single-binary daemon, Apache 2.0 — no per-second cloud
+  fees, no vendor lock-in.
+
+**Where the others fit better.** CubeSandbox: faster pure cold-start
+(<60 ms advertised). Daytona: workspace runtimes where each user owns
+one long-lived sandbox. OpenSandbox: one orchestration API across
+multiple isolation backends. BoxLite: embeddable, daemon-less,
+cross-platform (macOS via Hypervisor.framework). Modal: the closed-
+source managed system with the same primitive.
+
+**Where forkd is wrong.** Function-level snapshot runtimes that give
+up real Linux (single-vCPU, serial I/O only) beat forkd's ~100 ms by
+an order of magnitude — at the cost of not running real Python
+servers, `apt install`, or outbound HTTPS.
 
 <br/>
 
