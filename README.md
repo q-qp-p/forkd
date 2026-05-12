@@ -156,18 +156,24 @@ upstream project** unless they match a row in our benchmark chart
 above. forkd does not measure other projects on workloads they were
 not designed for.
 
-| Project | Primitive | Cold-start (advertised) | Fork-from-warm | Per-child resource quotas | Built-in auth / TLS | License |
-|---|---|---:|:---:|:---:|:---:|---|
-| **forkd** | microVM (Firecracker) + snapshot CoW fork | 101 ms (measured, N=100, import-numpy task) | ✅ | ✅ cgroup v2 `memory.max` today; cpu/io/pids next | ✅ bearer + rustls TLS | Apache 2.0 |
-| [Tencent CubeSandbox](https://github.com/TencentCloud/CubeSandbox) | microVM (RustVMM + KVM) | "<60 ms" cold, "<150 ms under concurrent" | "coming soon" (event-level snapshot rollback) | per-instance < 5 MiB; quotas not documented | not documented in OSS docs | Apache 2.0 |
-| [Daytona](https://github.com/daytonaio/daytona) | OCI workspace (Docker-compatible, per-workspace kernel claim) | "<90 ms" to spin up a workspace | ❌ snapshot for resume, no fork-from-warm | yes (resource caps per workspace) | yes (managed and self-hosted) | AGPL-3.0 |
-| [Alibaba OpenSandbox](https://github.com/alibaba/OpenSandbox) | abstraction layer over Docker / Kubernetes / gVisor / Kata / Firecracker | not advertised | ❌ (delegates to underlying runtime) | yes (via runtime + K8s) | yes (ingress gateway + egress policy) | Apache 2.0 |
-| [E2B](https://github.com/e2b-dev/E2B) | sandbox infra (Firecracker under the hood) | not advertised in OSS repo | ❌ (managed service "Sandbox" persists, doesn't fork) | yes (managed) | yes (managed) | Apache 2.0 |
-| [BoxLite](https://github.com/boxlite-ai/boxlite) | microVM (KVM / Hypervisor.framework) running OCI containers | not advertised | ❌ (stateful "Boxes" persist across restarts, not fork-from-warm) | yes (KVM + seccomp + resource caps) | `allow_net` policy per Box | Apache 2.0 |
-| Modal | proprietary, snapshot-fork primitive ("Modal Sandbox") | not public; advertises sub-second cold-starts | ✅ (closed source) | ✅ | ✅ | proprietary SaaS |
-| Firecracker (raw) | microVM | ~750 ms full boot, no orchestration | snapshot/restore exists; CoW is up to caller | n/a — primitive only | n/a | Apache 2.0 |
-| Docker (runc) | OCI container | seconds for full image pull + start | ❌ | yes (cgroups) | n/a | Apache 2.0 |
-| gVisor (runsc) | userspace kernel container | seconds | ❌ | yes (cgroups) | n/a | Apache 2.0 |
+| Project | Primitive | Cold-start | Fork-from-warm | Quotas | Auth / TLS | License |
+|---|---|---|:---:|---|---|---|
+| **forkd** | Firecracker + snapshot CoW | **101 ms** measured | ✅ | cgroup `memory.max` | bearer + rustls | Apache 2.0 |
+| [CubeSandbox][cs] | RustVMM + KVM microVM | <60 ms advertised | soon | <5 MiB / instance | not in OSS docs | Apache 2.0 |
+| [Daytona][dy] | OCI workspace | <90 ms advertised | ❌ resume only | per workspace | yes | **AGPL-3.0** |
+| [OpenSandbox][os] | abstraction over Docker/K8s/gVisor/Kata/FC | not advertised | ❌ | via runtime | ingress + egress | Apache 2.0 |
+| [E2B][e2b] | Firecracker (managed) | not in OSS repo | ❌ | managed | managed | Apache 2.0 |
+| [BoxLite][bl] | KVM microVM, OCI guest | not advertised | ❌ stateful Box | KVM + seccomp | `allow_net` per Box | Apache 2.0 |
+| Modal | proprietary snapshot fork | not public | ✅ | ✅ | ✅ | proprietary |
+| Firecracker raw | microVM only | ~750 ms cold boot | manual | n/a | n/a | Apache 2.0 |
+| Docker (runc) | OCI container | seconds | ❌ | cgroups | n/a | Apache 2.0 |
+| gVisor (runsc) | userspace kernel | seconds | ❌ | cgroups | n/a | Apache 2.0 |
+
+[cs]: https://github.com/TencentCloud/CubeSandbox
+[dy]: https://github.com/daytonaio/daytona
+[os]: https://github.com/alibaba/OpenSandbox
+[e2b]: https://github.com/e2b-dev/E2B
+[bl]: https://github.com/boxlite-ai/boxlite
 
 **Where forkd fits.** If your workload imports heavy Python or ML
 state at the start of every request, forkd's parent-snapshot CoW
