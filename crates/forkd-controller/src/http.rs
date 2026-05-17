@@ -130,6 +130,13 @@ async fn create_snapshot(
         return bad_request(&format!("rootfs not found: {}", rootfs.display()));
     }
 
+    // Cap boot_wait_secs so a hostile caller can't tie up a daemon worker
+    // for u64::MAX seconds. 60 s is well above the largest measured boot
+    // time in our recipes (postgres-fixture warms up in ~10 s).
+    if req.boot_wait_secs > 60 {
+        return bad_request("boot_wait_secs must be ≤ 60");
+    }
+
     let snap_dir = s.snapshot_root.join(&req.tag);
     if snap_dir.join("vmstate").exists() {
         return bad_request(&format!(
@@ -256,6 +263,15 @@ async fn create_sandbox(
     }
     if req.n > 1000 {
         return bad_request("n must be ≤ 1000 (sanity cap)");
+    }
+    // Validate snapshot_tag BEFORE any filesystem op. Without this, a tag
+    // like `../../etc` makes `snapshot_root.join(tag)` traverse outside
+    // snapshot_root (Rust's Path::join doesn't normalise `..`), and the
+    // unvalidated tag would also persist into SandboxInfo.snapshot_tag,
+    // later feeding `read_snapshot_volumes` and letting an attacker pick
+    // the JSON file the daemon parses for grandchild volume specs.
+    if !is_safe_tag(&req.snapshot_tag) {
+        return bad_request("snapshot_tag must be 1-64 chars, ASCII alnum or dash/underscore");
     }
 
     // Snapshot can come either from the daemon's registry (created via
@@ -546,6 +562,13 @@ fn read_snapshot_volumes(
     snapshot_root: &std::path::Path,
     tag: &str,
 ) -> anyhow::Result<Vec<forkd_vmm::VolumeSpec>> {
+    // Defense in depth: every caller is expected to have validated `tag` via
+    // `is_safe_tag` before persisting it, but if a future caller forgets, or
+    // a registry row gets reconstructed from an older state.json written
+    // before tag validation existed, refuse to dereference the join.
+    if !is_safe_tag(tag) {
+        anyhow::bail!("refusing to read snapshot with unsafe tag (defense in depth)");
+    }
     let path = snapshot_root.join(tag).join("snapshot.json");
     if !path.exists() {
         return Ok(Vec::new());
@@ -869,6 +892,74 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_sandbox_rejects_unsafe_snapshot_tag_traversal() {
+        // Regression: `create_sandbox` previously skipped `is_safe_tag` on the
+        // request body's `snapshot_tag`. A traversing value like
+        // `../../etc/passwd` would fall through to the disk-fallback branch
+        // where `snapshot_root.join(tag)` produces a path that std::fs syscalls
+        // resolve outside snapshot_root. The 404-from-vmstate-existence-check
+        // partially limited impact, but the unvalidated tag also got persisted
+        // into SandboxInfo.snapshot_tag and later flowed into
+        // `read_snapshot_volumes`, where it would parse attacker-chosen JSON
+        // files as forkd_vmm::Snapshot and inherit their volumes into branches.
+        //
+        // Expect 400 (input validation), not 404 (file-existence oracle).
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/sandboxes")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"snapshot_tag":"../../etc/passwd","n":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_snapshot_rejects_boot_wait_over_cap() {
+        // Regression: `boot_wait_secs` was untyped u64 with no cap, so a
+        // hostile caller could pass u64::MAX to tie up a daemon worker.
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/snapshots")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"tag":"ok","kernel":"/dev/null","rootfs":"/dev/null","boot_wait_secs":999999}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_sandbox_rejects_unsafe_snapshot_tag_chars() {
+        // Defense in depth: also reject tags containing characters that aren't
+        // ASCII alnum / dash / underscore (matches `is_safe_tag`'s contract).
+        let app = router(test_state());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/sandboxes")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"snapshot_tag":"tag with space","n":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
