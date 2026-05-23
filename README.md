@@ -329,15 +329,27 @@ Requires: x86_64 Linux with KVM, Ubuntu 22.04 or newer.
 ### Confirm your host is ready
 
 ```bash
-pip install forkd
+# 1. CLI + daemon binaries (pre-built tarball, no Rust toolchain needed):
+curl -sSL https://github.com/deeplethe/forkd/releases/download/v0.3.4/forkd-v0.3.4-x86_64-linux.tar.gz \
+  | sudo tar -xz -C /usr/local/bin/
+
+# 2. Host bring-up:
 sudo bash scripts/setup-host.sh           # KVM + tap device, one-time
 sudo bash scripts/netns-setup.sh 3        # per-child network namespaces
+
+# 3. Sanity-check:
 forkd doctor                              # green-lights everything above
+
+# 4. (Optional) language clients for programmatic use:
+pip install forkd                         # Python SDK — calls the daemon over HTTP
+npm install @deeplethe/forkd              # TypeScript SDK
 ```
 
-`forkd doctor` runs 10 checks (KVM, tap, netns, firecracker binary,
-kernel image, daemon, ...) and emits fix hints for each failure.
-Run this first whenever something feels off.
+`forkd doctor` runs 14 checks (KVM, hardware virt, cgroup v2, IP forward,
+tap, netns, Firecracker binary + version, Docker daemon, snapshot dir +
+disk space, kernel image, controller reachability, platform) and emits
+specific fix hints for each non-pass. Run this first whenever something
+feels off.
 
 ### Fastest path — pull a pre-built snapshot from the Hub
 

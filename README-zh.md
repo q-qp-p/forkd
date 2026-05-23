@@ -323,15 +323,26 @@ N=100 实测 CoW 开销是 **每个 child 0.12 MiB**(详见 [bench/](./bench/)),
 ### 一. 确认主机环境就绪
 
 ```bash
-pip install forkd
+# 1. CLI + 守护进程二进制(预编译 tarball,不需要 Rust 工具链):
+curl -sSL https://github.com/deeplethe/forkd/releases/download/v0.3.4/forkd-v0.3.4-x86_64-linux.tar.gz \
+  | sudo tar -xz -C /usr/local/bin/
+
+# 2. 主机初始化:
 sudo bash scripts/setup-host.sh           # KVM + tap 设备,一次性
 sudo bash scripts/netns-setup.sh 3        # 每子 VM 的网络 namespace
-forkd doctor                              # 一键检查上面这些是否到位
+
+# 3. 一键自检:
+forkd doctor                              # 检查上面这些是否到位
+
+# 4. (可选)给程序用的语言客户端:
+pip install forkd                         # Python SDK —— 通过 HTTP 调守护进程
+npm install @deeplethe/forkd              # TypeScript SDK
 ```
 
-`forkd doctor` 跑 10 项检查(KVM、tap、netns、firecracker 二进制、
-内核镜像、daemon...),不通过的项目附带修复提示。任何东西觉得不对
-就先跑它。
+`forkd doctor` 跑 14 项检查(KVM、硬件虚拟化、cgroup v2、IP 转发、
+tap、netns、Firecracker 二进制 + 版本、Docker daemon、快照目录 +
+磁盘空间、内核镜像、controller 可达性、平台),每一项不通过都附带
+具体修复提示。任何东西觉得不对就先跑它。
 
 ### 二. 从 Docker 镜像起步(一条命令)
 
