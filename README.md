@@ -50,7 +50,7 @@ pause window from ~150 ms to ~3 ms per GiB by moving the memory
 write out of the critical section. Try the library API with
 `forkd wp-bench`:
 
-![forkd wp-bench v0.4 demo](./docs/assets/wp-bench-demo.gif)
+![forkd wp-bench v0.4 demo](./docs/assets/wp-bench-demo.webp)
 
 Full design: [`DESIGN-v0.4.md`](./DESIGN-v0.4.md). Empirical PoC data
 (3 PoCs, all passing): [`experiments/v0.4-*-poc/`](./experiments/).
@@ -66,7 +66,7 @@ grandchildren each receive a different steering hint, all three
 produce divergent itineraries while inheriting the same prior
 reasoning state.
 
-![forkd branch-and-fan-out demo](./docs/assets/demo-en.gif)
+![forkd branch-and-fan-out demo](./docs/assets/demo-en.webp)
 
 Headline divergence: the source (no hint) picks Nishiki Market for
 Day 1; all three hinted children independently substitute Arashiyama

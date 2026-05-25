@@ -48,7 +48,7 @@ pause 时间会从 150 ms 涨到 2.7 s
 降到每 GiB ~3 ms ——做法是把内存写出从临界区移出。可用 `forkd wp-bench`
 试 library API:
 
-![forkd wp-bench v0.4 demo](./docs/assets/wp-bench-demo-zh.gif)
+![forkd wp-bench v0.4 demo](./docs/assets/wp-bench-demo-zh.webp)
 
 完整设计:[`DESIGN-v0.4.md`](./DESIGN-v0.4.md)。4 个 PoC 实证数据
 全部通过:[`experiments/v0.4-*-poc/`](./experiments/)。跟踪 issue
@@ -63,7 +63,7 @@ pause 时间会从 150 ms 涨到 2.7 s
 ("深度文化派"、"极简派"、"省钱派"),输出三条**显著不同的**
 第一天行程。
 
-![forkd 分裂思考中的 agent](./docs/assets/demo-zh.gif)
+![forkd 分裂思考中的 agent](./docs/assets/demo-zh.webp)
 
 最关键的分裂证据:源 agent(无引导)第一天下午选 Nishiki Market
 (锦市场,$$);3 个被引导的子沙箱**各自独立地都换成了 Arashiyama
