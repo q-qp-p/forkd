@@ -186,6 +186,29 @@ back to forkd's mmap. If FC uses MAP_PRIVATE for restored memory, the
 two processes have divergent views and v0.4 fails. Phase 4 PoC
 should test this.
 
+### Empirical confirmation (memfd-share spike, 2026-05-25)
+
+Verified on dev box (Ubuntu 24.04, kernel 6.14): a memfd created in
+process A is openable by process B via `/proc/<A_pid>/fd/<N>`, and
+writes through either fd are visible to both.
+
+```
+[parent] created memfd fd=3, pid=1331774
+[stage 1] same-process re-open via /proc/self/fd: ok
+[stage 2] child opened parent's memfd via /proc path
+[stage 3] child wrote "WRITTEN_FROM_CHILD"
+[parent] post-child read shows the child's write ✓
+```
+
+(Script: `experiments/v0.4-memfd-share-spike/spike.py`.)
+
+The remaining unknown is whether Firecracker specifically opens
+`mem_backend.backend_path` with `MAP_SHARED` (works for v0.4) or
+`MAP_PRIVATE` (breaks v0.4). FC's existing `Uffd` backend uses
+shared semantics for the registered uffd region; the `File` backend
+should be similar but we have not verified empirically. Phase 5
+PoC will boot a real FC against `/proc/self/fd/<N>` and confirm.
+
 ## Open questions for next session
 
 - Can we ask FC for a vCPU pause without going through snapshot/create?
